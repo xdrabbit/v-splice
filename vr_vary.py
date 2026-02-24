@@ -114,7 +114,7 @@ def dynamic_perclip_then_concat(
 
         try:
             _, _, has_audio = probe_file(path)
-            inp = ffmpeg.input(path, hwaccel='cuda')  # GPU decode, CPU frames for sw filters
+            inp = ffmpeg.input(path)  # plain CPU decode — hwaccel gains nothing with sw filters
             v   = inp.video
             a   = inp.audio if has_audio else None
 
@@ -127,13 +127,16 @@ def dynamic_perclip_then_concat(
                 if a:
                     a = a.filter('areverse')
 
-            # Zoompan
-            v = v.filter('scale', 'iw*2', 'ih*2')
-            v = v.filter('zoompan',
-                         z=f'zoom+({zoom_e}-{zoom_s})*(on/(duration*25))',
-                         x=f'iw/zoom/2+{pan_x}*iw/zoom',
-                         y=f'ih/zoom/2+{pan_y}*ih/zoom',
-                         d=1, s=output_size)
+            # Fast zoom: scale up then crop — same visual result as zoompan, much faster
+            w, h  = output_size.split('x')
+            iw, ih = int(w), int(h)
+            zw = int(iw * zoom_e)
+            zh = int(ih * zoom_e)
+            off_x = max(0, int((zw - iw) / 2 + pan_x * iw))
+            off_y = max(0, int((zh - ih) / 2 + pan_y * ih))
+            v = v.filter('scale', iw, ih)        # normalise to target res first
+            v = v.filter('scale', zw, zh)         # zoom
+            v = v.filter('crop', iw, ih, off_x, off_y)  # pan + crop back
 
             # Static brightness / contrast tweak
             if random.random() < effect_prob:
