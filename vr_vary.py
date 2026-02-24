@@ -114,7 +114,7 @@ def dynamic_perclip_then_concat(
 
         try:
             _, _, has_audio = probe_file(path)
-            inp = ffmpeg.input(path)
+            inp = ffmpeg.input(path, hwaccel='cuda')  # GPU decode, CPU frames for sw filters
             v   = inp.video
             a   = inp.audio if has_audio else None
 
@@ -156,12 +156,12 @@ def dynamic_perclip_then_concat(
 
             if a:
                 out = ffmpeg.output(v, a, temp_out,
-                                    vcodec='libx264', crf=23, preset='fast',
+                                    vcodec='h264_nvenc', cq=23, preset='p4',
                                     acodec='aac', audio_bitrate='192k',
                                     pix_fmt='yuv420p')
             else:
                 out = ffmpeg.output(v, temp_out,
-                                    vcodec='libx264', crf=23, preset='fast',
+                                    vcodec='h264_nvenc', cq=23, preset='p4',
                                     pix_fmt='yuv420p')
 
             ffmpeg.run(out, overwrite_output=True, quiet=True)
@@ -191,7 +191,7 @@ def dynamic_perclip_then_concat(
             p = ffmpeg.probe(tf)
             durations.append(float(p['format']['duration']))
 
-        inputs = [ffmpeg.input(tf) for tf in temp_files]
+        inputs = [ffmpeg.input(tf) for tf in temp_files]  # CPU decode for filter graph
         cur_v  = inputs[0].video
         cur_a  = inputs[0].audio if all_have_audio else None
         cur_d  = durations[0]
@@ -213,12 +213,12 @@ def dynamic_perclip_then_concat(
 
         if all_have_audio:
             out = ffmpeg.output(cur_v, cur_a, final_output,
-                                vcodec='libx264', crf=23, preset='fast',
+                                vcodec='h264_nvenc', cq=23, preset='p4',
                                 acodec='aac', audio_bitrate='192k',
                                 pix_fmt='yuv420p')
         else:
             out = ffmpeg.output(cur_v, final_output,
-                                vcodec='libx264', crf=23, preset='fast',
+                                vcodec='h264_nvenc', cq=23, preset='p4',
                                 pix_fmt='yuv420p')
 
         ffmpeg.run(out, overwrite_output=True, quiet=True)
