@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>VR-Vary • Dynamic Video Mixer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 1rem; background: #0f0f0f; color: #e0e0e0; }
+    h1 { color: #fff; letter-spacing: 1px; }
+    h3 { color: #aaa; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; margin: 1.5rem 0 0.5rem; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+
+    /* Path input */
+    #path-box.processing { border-color: #f0a030 !important; animation: pulseBorder 1.2s ease-in-out infinite; }
+    @keyframes pulseBorder {
+      0%, 100% { border-color: #f0a030; box-shadow: 0 0 0 0 rgba(240,160,48,0.4); }
+      50%       { border-color: #ffcc66; box-shadow: 0 0 0 8px rgba(240,160,48,0); }
+    }
+
+    /* Path input */
+    .path-row { display: flex; gap: 0.5rem; margin: 0.5rem 0 1rem; }
+    .path-row input { flex: 1; padding: 0.55rem 0.8rem; background: #1e1e1e; border: 1px solid #444; border-radius: 6px; color: #e0e0e0; font-size: 0.95rem; }
+    .path-row input:focus { outline: none; border-color: #58a6ff; }
+    select { width: 100%; padding: 0.55rem 0.8rem; background: #1e1e1e; border: 1px solid #444; border-radius: 6px; color: #e0e0e0; margin-bottom: 1rem; }
+
+    /* Controls grid */
+    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem 1.5rem; }
+    .controls label { display: flex; flex-direction: column; gap: 4px; font-size: 0.88rem; color: #bbb; }
+    .controls label span { display: flex; justify-content: space-between; }
+    .controls input[type=range] { width: 100%; accent-color: #58a6ff; }
+
+    /* Buttons */
+    #btn-process {
+      margin-top: 1.2rem; padding: 0.85rem 2rem; font-size: 1.05rem;
+      background: #238636; color: #fff; border: none; border-radius: 8px;
+      cursor: pointer; display: flex; align-items: center; gap: 0.6rem; transition: background 0.2s;
+    }
+    #btn-process:disabled { background: #333; color: #666; cursor: not-allowed; }
+    #btn-process:not(:disabled):hover { background: #2ea043; }
+    #btn-process.spinning { background: #9a4f00; }
+
+    /* Spinner */
+    .spinner { width: 18px; height: 18px; border: 3px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; display: none; }
+    #btn-process.spinning .spinner { display: block; }
+
+    /* Progress bar */
+    #progress-wrap { background: #1e1e1e; border-radius: 8px; height: 10px; margin: 0.8rem 0; overflow: hidden; display: none; }
+    #progress-bar  { height: 100%; background: linear-gradient(90deg, #58a6ff, #a371f7); width: 0%; transition: width 0.5s ease; }
+
+    /* Status + output */
+    #status { min-height: 1.5rem; color: #8b8b8b; margin: 0.5rem 0; font-size: 0.92rem; }
+    #output-link { display: none; margin: 0.8rem 0; padding: 0.7rem 1rem; background: #1a2a1a; border: 1px solid #2ea043; border-radius: 8px; }
+    #output-link a { color: #56d364; text-decoration: none; font-weight: 600; word-break: break-all; }
+    #output-link a:hover { text-decoration: underline; }
+
+    video { max-width: 100%; margin-top: 1rem; border-radius: 8px; display: none; }
+  </style>
+</head>
+<body>
+
+<h1>VR-Vary • Dynamic Video Mixer</h1>
+
+<div class="path-row">
+  <input type="text" id="manual-path" id="path-box" placeholder="Paste folder path: /mnt/c/myfolder  or  C:\myfolder" />
+</div>
+<select id="quick-select">
+  <option value="">— Quick select —</option>
+  <option value="/mnt/c/Users/tkash/Desktop">Desktop (C:\Users\tkash\Desktop)</option>
+  <option value="/mnt/c/Users/tkash/Downloads">Downloads (C:\Users\tkash\Downloads)</option>
+  <option value="/mnt/c/Users/tkash/Videos">Videos (C:\Users\tkash\Videos)</option>
+  <option value="/home/tkash">WSL Home (/home/tkash)</option>
+  <option value="/home/tkash/wsl_dev/v-splice/test">Test folder (./test)</option>
+</select>
+
+<h3>Timing</h3>
+<div class="controls">
+  <label><span>Crossfade <em id="cf-val">0.25</em> s</span>
+    <input type="range" id="crossfade" min="0.05" max="2.0" step="0.05" value="0.25"></label>
+
+  <label><span>Reverse probability <em id="rp-val">15</em>%</span>
+    <input type="range" id="reverse_prob" min="0" max="60" step="1" value="15"></label>
+
+  <label><span>Min speed <em id="mins-val">0.3</em>×</span>
+    <input type="range" id="min_speed" min="0.1" max="2.0" step="0.1" value="0.3"></label>
+
+  <label><span>Max speed <em id="maxs-val">5.0</em>×</span>
+    <input type="range" id="max_speed" min="1.0" max="10.0" step="0.5" value="5.0"></label>
+</div>
+
+<h3>Motion</h3>
+<div class="controls">
+  <label><span>Zoom intensity <em id="zi-val">0.15</em></span>
+    <input type="range" id="zoom_intensity" min="0.0" max="0.30" step="0.01" value="0.15"></label>
+
+  <label><span>Pan amount <em id="pa-val">0.05</em></span>
+    <input type="range" id="pan_amount" min="0.0" max="0.15" step="0.01" value="0.05"></label>
+</div>
+
+<h3>Speed Style</h3>
+<div class="controls">
+  <label><span>Pulse / wave strength <em id="wa-val">0.50</em></span>
+    <input type="range" id="wave_amplitude" min="0.0" max="1.0" step="0.05" value="0.5"></label>
+
+  <label><span>Stutter probability <em id="sp-val">17</em>%</span>
+    <input type="range" id="stutter_prob" min="0" max="60" step="1" value="17"></label>
+</div>
+
+<h3>Effects</h3>
+<div class="controls">
+  <label><span>Overall effect chance <em id="ep-val">40</em>%</span>
+    <input type="range" id="effect_prob" min="0" max="100" step="5" value="40"></label>
+
+  <label><span>Audio pitch shift chance <em id="psp-val">15</em>%</span>
+    <input type="range" id="pitch_shift_prob" min="0" max="50" step="1" value="15"></label>
+</div>
+
+<button id="btn-process" disabled>
+  <span class="spinner"></span>
+  <span id="btn-label">Process Folder</span>
+</button>
+
+<div id="progress-wrap"><div id="progress-bar"></div></div>
+<div id="status">Select a folder to begin.</div>
+<div id="output-link">✅ Output: <a id="output-anchor" href="#" target="_blank"></a></div>
+<video id="preview" controls autoplay muted></video>
+
+<script>
+const pathInput  = document.getElementById("manual-path");
+const btn        = document.getElementById("btn-process");
+const btnLabel   = document.getElementById("btn-label");
+const statusEl   = document.getElementById("status");
+const preview    = document.getElementById("preview");
+const progressWrap = document.getElementById("progress-wrap");
+const progressBar  = document.getElementById("progress-bar");
+const outputLink   = document.getElementById("output-link");
+const outputAnchor = document.getElementById("output-anchor");
+
+let selectedFolder = null;
+let pollTimer = null;
+
+// Slider live values
+const sliderMap = {
+  crossfade:       "cf-val",
+  reverse_prob:    "rp-val",
+  min_speed:       "mins-val",
+  max_speed:       "maxs-val",
+  zoom_intensity:  "zi-val",
+  pan_amount:      "pa-val",
+  wave_amplitude:  "wa-val",
+  stutter_prob:    "sp-val",
+  effect_prob:     "ep-val",
+  pitch_shift_prob:"psp-val",
+};
+Object.entries(sliderMap).forEach(([id, valId]) => {
+  const slider = document.getElementById(id);
+  const span   = document.getElementById(valId);
+  slider.addEventListener("input", () => span.textContent = slider.value);
+});
+
+function setFolder(path) {
+  selectedFolder = path.trim();
+  pathInput.value = selectedFolder;
+  btn.disabled = false;
+}
+
+function setProcessing(on) {
+  btn.classList.toggle("spinning", on);
+  btn.disabled = on;
+  btnLabel.textContent = on ? "Processing…" : "Process Folder";
+  pathInput.classList.toggle("processing", on);
+  progressWrap.style.display = on ? "block" : "none";
+  if (!on) progressBar.style.width = "0%";
+}
+
+// Manual path
+pathInput.addEventListener("input", e => {
+  const v = e.target.value.trim();
+  if (v) { selectedFolder = v; btn.disabled = false; }
+  else   { selectedFolder = null; btn.disabled = true; }
+});
+
+// Quick select
+document.getElementById("quick-select").addEventListener("change", e => {
+  if (e.target.value) setFolder(e.target.value);
+});
+
+// ── Process ───────────────────────────────────────────────────────────────────
+btn.addEventListener("click", async () => {
+  if (!selectedFolder) return;
+
+  outputLink.style.display = "none";
+  preview.style.display    = "none";
+  setProcessing(true);
+  statusEl.textContent = "Starting…";
+
+  const payload = {
+    folder:           selectedFolder,
+    crossfade:        +document.getElementById("crossfade").value,
+    reverse_prob:     +document.getElementById("reverse_prob").value / 100,
+    min_speed:        +document.getElementById("min_speed").value,
+    max_speed:        +document.getElementById("max_speed").value,
+    zoom_intensity:   +document.getElementById("zoom_intensity").value,
+    pan_amount:       +document.getElementById("pan_amount").value,
+    wave_amplitude:   +document.getElementById("wave_amplitude").value,
+    stutter_prob:     +document.getElementById("stutter_prob").value / 100,
+    effect_prob:      +document.getElementById("effect_prob").value / 100,
+    pitch_shift_prob: +document.getElementById("pitch_shift_prob").value / 100,
+  };
+
+  let jobId;
+  try {
+    const r   = await fetch("/process", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    const res = await r.json();
+    if (!r.ok || res.success === false) {
+      statusEl.textContent = res.message || "Error starting job.";
+      setProcessing(false);
+      return;
+    }
+    jobId = res.job_id;
+  } catch(err) {
+    statusEl.textContent = "Network error: " + err.message;
+    setProcessing(false);
+    return;
+  }
+
+  // Poll status
+  pollTimer = setInterval(async () => {
+    try {
+      const sr  = await fetch(`/status/${jobId}`);
+      const job = await sr.json();
+
+      statusEl.textContent = job.message || "";
+
+      if (job.total > 0) {
+        const pct = Math.round((job.current / job.total) * 100);
+        progressBar.style.width = pct + "%";
+      }
+
+      if (job.state === "done") {
+        clearInterval(pollTimer);
+        setProcessing(false);
+        progressBar.style.width = "100%";
+
+        // Build serve URL from absolute output path: /output/mnt/c/...
+        const servePath = job.output.startsWith("/") ? job.output.slice(1) : job.output;
+        const vidUrl    = `/output/${servePath}`;
+
+        outputAnchor.href        = vidUrl;
+        outputAnchor.textContent = job.filename;
+        outputLink.style.display = "block";
+
+        preview.src           = vidUrl;
+        preview.style.display = "block";
+
+      } else if (job.state === "error") {
+        clearInterval(pollTimer);
+        setProcessing(false);
+        statusEl.textContent = "❌ " + job.message;
+      }
+    } catch(e) { /* silently retry */ }
+  }, 3000);
+});
+</script>
+</body>
+</html>

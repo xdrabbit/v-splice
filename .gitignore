@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+.venv/
+
+# Video files
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+
+# Flask logs & runtime
+flask.log
+nohup.out
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Temp files created during processing
+concat_list.txt
+/tmp/
+
+# OS junk
+.DS_Store
+Thumbs.db
