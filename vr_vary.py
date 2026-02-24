@@ -136,9 +136,13 @@ def dynamic_perclip_then_concat(
                                     acodec='aac', audio_bitrate='192k',
                                     pix_fmt='yuv420p')
             else:
-                out = ffmpeg.output(v, temp_out,
+                # Add silent audio so all temp clips have identical streams for concat
+                silent = ffmpeg.input('anullsrc=r=44100:cl=stereo', format='lavfi')
+                out = ffmpeg.output(v, silent, temp_out,
                                     vcodec='h264_nvenc', cq=23, preset='p4',
-                                    pix_fmt='yuv420p')
+                                    acodec='aac', audio_bitrate='192k',
+                                    pix_fmt='yuv420p',
+                                    shortest=None)
 
             ffmpeg.run(out, overwrite_output=True, quiet=False)
             temp_files.append(temp_out)
