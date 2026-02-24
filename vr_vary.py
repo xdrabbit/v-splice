@@ -6,6 +6,8 @@ import shutil
 import datetime
 import tempfile
 import subprocess
+import concurrent.futures
+import threading
 
 import ffmpeg
 
@@ -48,8 +50,6 @@ def dynamic_perclip_then_concat(
     progress_callback=None,
 ):
     temp_dir = tempfile.mkdtemp()
-    temp_files     = []
-    clip_has_audio = []
 
     # Detect resolution from first video
     _, first_vs, _ = probe_file(video_paths[0])
@@ -62,73 +62,70 @@ def dynamic_perclip_then_concat(
         output_size = '1080x1920'
         print(f"Could not detect resolution, defaulting to {output_size}")
 
-    # ── Phase 1: per-clip effects ─────────────────────────────────────────────
-    for i, path in enumerate(video_paths):
-        # Only use timestamp-shift styles (fast) — complex per-frame math is a CPU hog
-        speed_style = random.choices(
-            ['constant', 'constant', 'stutter'],            # weight constant heavier
+    # ── Phase 1: per-clip effects (parallel) ─────────────────────────────────
+    done_count = 0
+    done_lock  = threading.Lock()
+    results    = [None] * len(video_paths)   # preserves order for concat
+
+    def process_clip(i, path):
+        nonlocal done_count
+        rng = random.Random()   # thread-local RNG — no shared state
+
+        speed_style = rng.choices(
+            ['constant', 'constant', 'stutter'],
             weights=[3, 3, max(0.01, stutter_prob * 5)], k=1
         )[0]
 
         if speed_style == 'constant':
-            base_speed = random.uniform(min_speed, max_speed)
+            base_speed = rng.uniform(min_speed, max_speed)
             speed_mult = round(1.0 / base_speed, 6)
             speed_expr = f'{speed_mult}*PTS'
             speed_desc = f"constant {base_speed:.2f}x"
         else:  # stutter
-            spds = [random.uniform(0.2, 0.5), random.uniform(1.5, 3.0), random.uniform(0.8, 1.2)]
-            random.shuffle(spds)
+            spds = [rng.uniform(0.2, 0.5), rng.uniform(1.5, 3.0), rng.uniform(0.8, 1.2)]
+            rng.shuffle(spds)
             speed_expr = (f"if(lt(mod(N,90),30),{spds[0]},"
                           f"if(lt(mod(N,90),60),{spds[1]},{spds[2]}))*PTS")
             speed_desc = "stutter"
 
-        # No reverse — buffers entire clip in RAM, causes hangs on large files
-        zoom_s     = random.uniform(zoom_min, zoom_max)
-        zoom_e     = random.uniform(zoom_min, zoom_max)
-        pan_x      = random.uniform(-pan_range, pan_range)
-        pan_y      = random.uniform(-pan_range, pan_range)
-        brightness = round(random.uniform(-brightness_max, brightness_max), 4)
-        contrast   = round(1.0 + random.uniform(-contrast_max, contrast_max), 4)
-
-        temp_out = os.path.join(temp_dir, f"temp_{i:03d}.mp4")
+        zoom_e     = rng.uniform(zoom_min, zoom_max)
+        pan_x      = rng.uniform(-pan_range, pan_range)
+        pan_y      = rng.uniform(-pan_range, pan_range)
+        brightness = round(rng.uniform(-brightness_max, brightness_max), 4)
+        contrast   = round(1.0 + rng.uniform(-contrast_max, contrast_max), 4)
+        do_eq      = rng.random() < effect_prob
+        temp_out   = os.path.join(temp_dir, f"temp_{i:03d}.mp4")
 
         try:
             _, _, has_audio = probe_file(path)
-            inp = ffmpeg.input(path)  # plain CPU decode — hwaccel gains nothing with sw filters
+            inp = ffmpeg.input(path)
             v   = inp.video
             a   = inp.audio if has_audio else None
 
-            # Speed
             v = v.filter('setpts', speed_expr)
 
-            # Fast zoom: scale up then crop — same visual result as zoompan, much faster
-            w, h  = output_size.split('x')
+            w, h   = output_size.split('x')
             iw, ih = int(w), int(h)
-            zw = int(iw * zoom_e)
-            zh = int(ih * zoom_e)
-            off_x = max(0, int((zw - iw) / 2 + pan_x * iw))
-            off_y = max(0, int((zh - ih) / 2 + pan_y * ih))
-            v = v.filter('scale', iw, ih)        # normalise to target res first
-            v = v.filter('scale', zw, zh)         # zoom
-            v = v.filter('crop', iw, ih, off_x, off_y)  # pan + crop back
+            zw     = int(iw * zoom_e)
+            zh     = int(ih * zoom_e)
+            off_x  = max(0, int((zw - iw) / 2 + pan_x * iw))
+            off_y  = max(0, int((zh - ih) / 2 + pan_y * ih))
+            v = v.filter('scale', iw, ih)
+            v = v.filter('scale', zw, zh)
+            v = v.filter('crop', iw, ih, off_x, off_y)
 
-            # Static brightness / contrast tweak
-            if random.random() < effect_prob:
+            if do_eq:
                 v = v.filter('eq', brightness=brightness, contrast=contrast)
 
-            # Optional audio effects
             if a:
-                r = random.random()
+                r = rng.random()
                 if r < pitch_shift_prob:
                     try:
-                        a = a.filter('rubberband', pitch=random.uniform(0.9, 1.1))
+                        a = a.filter('rubberband', pitch=rng.uniform(0.9, 1.1))
                     except Exception:
                         pass
                 elif r < pitch_shift_prob + lowpass_prob:
                     a = a.filter('lowpass', f=800)
-
-            print(f"  Clip {i+1}/{len(video_paths)}: {speed_desc}, "
-                  f"zoom {zoom_s:.2f}→{zoom_e:.2f}, bright={brightness}")
 
             if a:
                 out = ffmpeg.output(v, a, temp_out,
@@ -136,7 +133,6 @@ def dynamic_perclip_then_concat(
                                     acodec='aac', audio_bitrate='192k',
                                     pix_fmt='yuv420p')
             else:
-                # Add silent audio so all temp clips have identical streams for concat
                 silent = ffmpeg.input('anullsrc=r=44100:cl=stereo', format='lavfi')
                 out = ffmpeg.output(v, silent, temp_out,
                                     vcodec='h264_nvenc', cq=23, preset='p4',
@@ -144,19 +140,33 @@ def dynamic_perclip_then_concat(
                                     pix_fmt='yuv420p',
                                     shortest=None)
 
-            ffmpeg.run(out, overwrite_output=True, quiet=False)
-            temp_files.append(temp_out)
-            clip_has_audio.append(has_audio)
+            ffmpeg.run(out, overwrite_output=True, quiet=True)
+
+            with done_lock:
+                done_count += 1
+                current = done_count
+            print(f"  [{current}/{len(video_paths)}] {speed_desc} | {os.path.basename(path)}")
             if progress_callback:
-                progress_callback(len(temp_files), len(video_paths), os.path.basename(path))
+                progress_callback(current, len(video_paths), os.path.basename(path))
+            return (temp_out, has_audio)
 
         except ffmpeg.Error as ex:
             stderr = ex.stderr.decode(errors='replace') if ex.stderr else str(ex)
-            print(f"  FAILED {os.path.basename(path)}: {stderr[-800:]}")
-            continue
+            print(f"  FAILED {os.path.basename(path)}: {stderr[-400:]}")
+            return None
         except Exception as ex:
             print(f"  FAILED {os.path.basename(path)}: {ex}")
-            continue
+            return None
+
+    workers = min(6, len(video_paths))
+    print(f"Processing {len(video_paths)} clips with {workers} parallel workers…")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(process_clip, i, p): i for i, p in enumerate(video_paths)}
+        for fut in concurrent.futures.as_completed(futs):
+            results[futs[fut]] = fut.result()
+
+    temp_files     = [r[0] for r in results if r is not None]
+    clip_has_audio = [r[1] for r in results if r is not None]
 
     if not temp_files:
         raise RuntimeError("No clips processed successfully.")
