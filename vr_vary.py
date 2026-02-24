@@ -5,6 +5,7 @@ import random
 import shutil
 import datetime
 import tempfile
+import subprocess
 
 import ffmpeg
 
@@ -139,12 +140,16 @@ def dynamic_perclip_then_concat(
                                     vcodec='h264_nvenc', cq=23, preset='p4',
                                     pix_fmt='yuv420p')
 
-            ffmpeg.run(out, overwrite_output=True, quiet=True)
+            ffmpeg.run(out, overwrite_output=True, quiet=False)
             temp_files.append(temp_out)
             clip_has_audio.append(has_audio)
             if progress_callback:
                 progress_callback(len(temp_files), len(video_paths), os.path.basename(path))
 
+        except ffmpeg.Error as ex:
+            stderr = ex.stderr.decode(errors='replace') if ex.stderr else str(ex)
+            print(f"  FAILED {os.path.basename(path)}: {stderr[-800:]}")
+            continue
         except Exception as ex:
             print(f"  FAILED {os.path.basename(path)}: {ex}")
             continue
@@ -152,51 +157,29 @@ def dynamic_perclip_then_concat(
     if not temp_files:
         raise RuntimeError("No clips processed successfully.")
 
-    # ── Phase 2: crossfade concat ─────────────────────────────────────────────
-    final_output   = os.path.join(output_dir, output_name)
-    all_have_audio = all(clip_has_audio)
+    # ── Phase 2: concat via demuxer (stream-copy, works for any clip count) ───
+    final_output = os.path.join(output_dir, output_name)
 
     if len(temp_files) == 1:
         shutil.copy(temp_files[0], final_output)
         print(f"Single clip → {final_output}")
     else:
-        print(f"Crossfading {len(temp_files)} clips (audio={'yes' if all_have_audio else 'no'})…")
-        durations = []
-        for tf in temp_files:
-            p = ffmpeg.probe(tf)
-            durations.append(float(p['format']['duration']))
+        print(f"Joining {len(temp_files)} clips (stream copy, no re-encode)…")
+        concat_list = os.path.join(temp_dir, "concat_list.txt")
+        with open(concat_list, "w") as fh:
+            for tf in temp_files:
+                fh.write(f"file '{tf}'\n")
 
-        inputs = [ffmpeg.input(tf) for tf in temp_files]  # CPU decode for filter graph
-        cur_v  = inputs[0].video
-        cur_a  = inputs[0].audio if all_have_audio else None
-        cur_d  = durations[0]
-
-        for i in range(1, len(inputs)):
-            nxt_v = inputs[i].video
-            nxt_a = inputs[i].audio if all_have_audio else None
-            nxt_d = durations[i]
-            offset = max(cur_d - crossfade_sec, cur_d / 2)
-
-            cur_v = ffmpeg.filter([cur_v, nxt_v], 'xfade',
-                                  transition='fade',
-                                  duration=crossfade_sec,
-                                  offset=offset)
-            if all_have_audio:
-                cur_a = ffmpeg.filter([cur_a, nxt_a], 'acrossfade',
-                                      d=crossfade_sec, c1='tri', c2='tri')
-            cur_d = cur_d + nxt_d - crossfade_sec
-
-        if all_have_audio:
-            out = ffmpeg.output(cur_v, cur_a, final_output,
-                                vcodec='h264_nvenc', cq=23, preset='p4',
-                                acodec='aac', audio_bitrate='192k',
-                                pix_fmt='yuv420p')
-        else:
-            out = ffmpeg.output(cur_v, final_output,
-                                vcodec='h264_nvenc', cq=23, preset='p4',
-                                pix_fmt='yuv420p')
-
-        ffmpeg.run(out, overwrite_output=True, quiet=True)
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list,
+            "-c", "copy",
+            final_output,
+        ]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.decode(errors='replace')[-600:])
 
     # Cleanup
     for f in temp_files:
@@ -259,6 +242,9 @@ def process_folder(
             return True, output_path, f"Done! → {output_name}"
         else:
             return False, None, "Output file missing or suspiciously small"
+    except ffmpeg.Error as e:
+        stderr = e.stderr.decode(errors='replace') if e.stderr else str(e)
+        return False, None, f"Processing failed: {stderr[-600:]}"
     except Exception as e:
         return False, None, f"Processing failed: {e}"
 
