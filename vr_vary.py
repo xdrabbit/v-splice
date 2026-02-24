@@ -63,38 +63,17 @@ def dynamic_perclip_then_concat(
 
     # ── Phase 1: per-clip effects ─────────────────────────────────────────────
     for i, path in enumerate(video_paths):
-        # Weight stutter_prob into style selection
-        base_styles = ['constant', 'ramp_up', 'ramp_down', 'pulse', 'smooth_wave']
-        weights     = [1.0, 1.0, 1.0, 1.0, 1.0]
-        base_styles.append('stutter')
-        weights.append(max(0.01, stutter_prob * 5))  # scale 0-1 → relative weight
-        speed_style = random.choices(base_styles, weights=weights, k=1)[0]
+        # Only use timestamp-shift styles (fast) — complex per-frame math is a CPU hog
+        speed_style = random.choices(
+            ['constant', 'constant', 'stutter'],            # weight constant heavier
+            weights=[3, 3, max(0.01, stutter_prob * 5)], k=1
+        )[0]
 
         if speed_style == 'constant':
             base_speed = random.uniform(min_speed, max_speed)
-            speed_expr = f'{1/base_speed}*PTS'
+            speed_mult = round(1.0 / base_speed, 6)
+            speed_expr = f'{speed_mult}*PTS'
             speed_desc = f"constant {base_speed:.2f}x"
-        elif speed_style == 'ramp_up':
-            s = random.uniform(2.0, 4.0)
-            e = random.uniform(0.3, 0.8)
-            speed_expr = f'({s} - ({s}-{e})*(N/TB/1000))*PTS'
-            speed_desc = f"ramp_up ({1/s:.1f}→{1/e:.1f}x)"
-        elif speed_style == 'ramp_down':
-            s = random.uniform(0.3, 0.6)
-            e = random.uniform(1.5, 3.5)
-            speed_expr = f'({s} + ({e}-{s})*(N/TB/1000))*PTS'
-            speed_desc = f"ramp_down ({1/s:.1f}→{1/e:.1f}x)"
-        elif speed_style == 'pulse':
-            base = random.uniform(0.8, 1.2)
-            amp  = wave_amplitude * random.uniform(0.3, 0.7)
-            freq = random.uniform(0.5, 2.0)
-            speed_expr = f'({base} + {amp}*sin(2*PI*{freq}*N/TB/25))*PTS'
-            speed_desc = f"pulse ({1/base:.1f}x base, amp={amp:.2f})"
-        elif speed_style == 'smooth_wave':
-            center = random.uniform(0.6, 1.4)
-            swing  = wave_amplitude * random.uniform(0.2, 0.5)
-            speed_expr = f'({center} + {swing}*sin(PI*N/TB/500))*PTS'
-            speed_desc = f"smooth_wave (swing={swing:.2f})"
         else:  # stutter
             spds = [random.uniform(0.2, 0.5), random.uniform(1.5, 3.0), random.uniform(0.8, 1.2)]
             random.shuffle(spds)
@@ -102,7 +81,7 @@ def dynamic_perclip_then_concat(
                           f"if(lt(mod(N,90),60),{spds[1]},{spds[2]}))*PTS")
             speed_desc = "stutter"
 
-        reverse    = random.random() < reverse_prob
+        # No reverse — buffers entire clip in RAM, causes hangs on large files
         zoom_s     = random.uniform(zoom_min, zoom_max)
         zoom_e     = random.uniform(zoom_min, zoom_max)
         pan_x      = random.uniform(-pan_range, pan_range)
@@ -120,12 +99,6 @@ def dynamic_perclip_then_concat(
 
             # Speed
             v = v.filter('setpts', speed_expr)
-
-            # Reverse
-            if reverse:
-                v = v.filter('reverse')
-                if a:
-                    a = a.filter('areverse')
 
             # Fast zoom: scale up then crop — same visual result as zoompan, much faster
             w, h  = output_size.split('x')
@@ -153,8 +126,7 @@ def dynamic_perclip_then_concat(
                 elif r < pitch_shift_prob + lowpass_prob:
                     a = a.filter('lowpass', f=800)
 
-            rev_str = " (rev)" if reverse else ""
-            print(f"  Clip {i+1}/{len(video_paths)}: {speed_desc}{rev_str}, "
+            print(f"  Clip {i+1}/{len(video_paths)}: {speed_desc}, "
                   f"zoom {zoom_s:.2f}→{zoom_e:.2f}, bright={brightness}")
 
             if a:
