@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory
 import os, threading, uuid, json
 from vr_vary import process_folder
+from vsplice_gentle import process_folder as gentle_process_folder
 
 # ── Job state storage ─────────────────────────────────────────────────────────
 jobs = {}          # job_id -> dict
@@ -21,6 +22,10 @@ app = Flask(__name__)
 @app.route("/")
 def index():
     return render_template("index.html")
+
+@app.route("/gentle")
+def gentle_index():
+    return render_template("gentle.html")
 
 @app.route("/process", methods=["POST"])
 def process():
@@ -58,6 +63,41 @@ def process():
                 filename = os.path.basename(out_path)
                 # Serve from /output/<folder_path>/<filename> by making a symlink-friendly route
                 # We encode the full absolute path for the serve_output route
+                set_job(job_id, state="done", message=msg,
+                        output=out_path, filename=filename)
+            else:
+                set_job(job_id, state="error", message=msg, output=None)
+        except Exception as e:
+            set_job(job_id, state="error", message=str(e), output=None)
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"job_id": job_id})
+
+@app.route("/gentle/process", methods=["POST"])
+def gentle_process():
+    data   = request.get_json()
+    folder = windows_to_wsl_path(data.get("folder", ""))
+
+    if not folder or not os.path.isdir(folder):
+        return jsonify({"success": False, "message": f"Invalid folder path: {folder}"}), 400
+
+    params = {
+        "crossfade_sec": float(data.get("crossfade", 0.5)),
+        "zoom_max":      1.0 + float(data.get("zoom_intensity", 0.04)),
+    }
+
+    job_id = str(uuid.uuid4())[:8]
+    set_job(job_id, state="starting", current=0, total=0, message="Starting…", output=None)
+
+    def progress_cb(current, total, clip_name=""):
+        set_job(job_id, state="running", current=current, total=total,
+                message=f"Processing clip {current}/{total}: {clip_name}")
+
+    def run():
+        try:
+            ok, out_path, msg = gentle_process_folder(folder, progress_callback=progress_cb, **params)
+            if ok:
+                filename = os.path.basename(out_path)
                 set_job(job_id, state="done", message=msg,
                         output=out_path, filename=filename)
             else:
