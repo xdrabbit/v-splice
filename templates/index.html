@@ -63,15 +63,10 @@
 <p class="gentle-link">Looking for clean, simple joins? Try the <a href="/gentle">Gentle Join</a> version (subtle crossfade + Ken Burns, no speed/reverse effects).</p>
 
 <div class="path-row">
-  <input type="text" id="manual-path" id="path-box" placeholder="Paste folder path: /mnt/c/myfolder  or  C:\myfolder" />
+  <input type="text" id="manual-path" placeholder="Paste folder path: /mnt/c/myfolder  or  C:\myfolder" />
 </div>
 <select id="quick-select">
   <option value="">— Quick select —</option>
-  <option value="/mnt/c/Users/tkash/Desktop">Desktop (C:\Users\tkash\Desktop)</option>
-  <option value="/mnt/c/Users/tkash/Downloads">Downloads (C:\Users\tkash\Downloads)</option>
-  <option value="/mnt/c/Users/tkash/Videos">Videos (C:\Users\tkash\Videos)</option>
-  <option value="/home/tkash">WSL Home (/home/tkash)</option>
-  <option value="/home/tkash/wsl_dev/v-splice/test">Test folder (./test)</option>
 </select>
 
 <h3>Timing</h3>
@@ -139,6 +134,26 @@ const outputAnchor = document.getElementById("output-anchor");
 
 let selectedFolder = null;
 let pollTimer = null;
+
+// Pre-fill with server CWD and build quick-select on load
+fetch("/api/cwd").then(r => r.json()).then(({cwd, home}) => {
+  setFolder(cwd);
+  const qs = document.getElementById("quick-select");
+  const opts = [
+    [cwd,                "Current directory"],
+    [home + "/Desktop",  "Desktop"],
+    [home + "/Downloads","Downloads"],
+    [home + "/Videos",   "Videos"],
+    [home,               "Home"],
+    [cwd + "/test",      "Test folder (./test)"],
+  ];
+  opts.forEach(([val, label]) => {
+    const o = document.createElement("option");
+    o.value = val;
+    o.textContent = label + "  (" + val + ")";
+    qs.appendChild(o);
+  });
+}).catch(() => {});
 
 // Slider live values
 const sliderMap = {

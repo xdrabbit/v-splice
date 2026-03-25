@@ -108,6 +108,10 @@ def gentle_process():
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"job_id": job_id})
 
+@app.route("/api/cwd")
+def api_cwd():
+    return jsonify({"cwd": os.getcwd(), "home": os.path.expanduser("~")})
+
 @app.route("/status/<job_id>")
 def status(job_id):
     with jobs_lock:
