@@ -28,7 +28,10 @@ def get_video_files(folder_path):
     videos = [
         os.path.join(folder_path, f)
         for f in os.listdir(folder_path)
-        if os.path.isfile(os.path.join(folder_path, f))
+        if not f.startswith('.')
+        and not f.startswith('combined_')
+        and not f.startswith('gentle_')
+        and os.path.isfile(os.path.join(folder_path, f))
         and os.path.splitext(f.lower())[1] in video_exts
     ]
     videos.sort()
@@ -66,14 +69,8 @@ def gentle_join(
     """
     temp_dir = tempfile.mkdtemp()
 
-    # Detect output resolution from first video
-    _, first_vs, _ = probe_file(video_paths[0])
-    if first_vs:
-        orig_w = int(first_vs['width'])
-        orig_h = int(first_vs['height'])
-    else:
-        orig_w, orig_h = 1080, 1920
-    print(f"Output resolution: {orig_w}x{orig_h}")
+    orig_w, orig_h = 1080, 1920
+    print(f"Forcing output resolution to 9:16 ({orig_w}x{orig_h})")
 
     # Ken Burns headroom (keep even numbers for codec compatibility)
     zoom_w = (int(orig_w * zoom_max) // 2) * 2
@@ -100,8 +97,9 @@ def gentle_join(
             v   = inp.video
             a   = inp.audio if has_audio else None
 
-            # Normalise to output resolution
-            v = v.filter('scale', orig_w, orig_h)
+            # Normalise to output resolution with padding to maintain aspect ratio
+            v = v.filter('scale', orig_w, orig_h, force_original_aspect_ratio='decrease')
+            v = v.filter('pad', orig_w, orig_h, '(ow-iw)/2', '(oh-ih)/2')
 
             # Scale up slightly to create Ken Burns headroom
             if extra_x > 0 or extra_y > 0:
@@ -117,6 +115,9 @@ def gentle_join(
                     y_expr = f'{extra_y}*(1-{t_ratio})'
 
                 v = v.filter('crop', orig_w, orig_h, x_expr, y_expr)
+
+            # Ensure uniform framerate and timebase for xfade compatibility
+            v = v.filter('fps', fps=30).filter('settb', '1/90000')
 
             # Ensure audio track (add silence if needed so xfade audio works)
             if a:
@@ -183,15 +184,17 @@ def gentle_join(
 
         # Build xfade+acrossfade chain using ffmpeg-python
         inputs = [ffmpeg.input(tf) for tf in temp_files]
-        current_v    = inputs[0].video
+        current_v    = inputs[0].video.filter('settb', '1/90000')
         current_a    = inputs[0].audio
         current_dur  = durations[0]
 
         for j in range(1, len(inputs)):
             offset = max(0.0, current_dur - cf)
 
+            next_v = inputs[j].video.filter('settb', '1/90000')
+
             current_v = ffmpeg.filter(
-                [current_v, inputs[j].video],
+                [current_v, next_v],
                 'xfade',
                 transition='fade',
                 duration=cf,

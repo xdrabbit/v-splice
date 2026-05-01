@@ -17,7 +17,10 @@ def get_video_files(folder_path):
     videos = [
         os.path.join(folder_path, f)
         for f in os.listdir(folder_path)
-        if os.path.isfile(os.path.join(folder_path, f))
+        if not f.startswith('.')
+        and not f.startswith('combined_')
+        and not f.startswith('gentle_')
+        and os.path.isfile(os.path.join(folder_path, f))
         and os.path.splitext(f.lower())[1] in video_exts
     ]
     videos.sort()
@@ -51,16 +54,9 @@ def dynamic_perclip_then_concat(
 ):
     temp_dir = tempfile.mkdtemp()
 
-    # Detect resolution from first video
-    _, first_vs, _ = probe_file(video_paths[0])
-    if first_vs:
-        orig_w = int(first_vs['width'])
-        orig_h = int(first_vs['height'])
-        output_size = f'{orig_w}x{orig_h}'
-        print(f"Detected source resolution: {output_size}")
-    else:
-        output_size = '1080x1920'
-        print(f"Could not detect resolution, defaulting to {output_size}")
+    orig_w, orig_h = 1080, 1920
+    output_size = f'{orig_w}x{orig_h}'
+    print(f"Forcing output resolution to 9:16 ({output_size})")
 
     # ── Phase 1: per-clip effects (parallel) ─────────────────────────────────
     done_count = 0
@@ -110,7 +106,8 @@ def dynamic_perclip_then_concat(
             zh     = int(ih * zoom_e)
             off_x  = max(0, int((zw - iw) / 2 + pan_x * iw))
             off_y  = max(0, int((zh - ih) / 2 + pan_y * ih))
-            v = v.filter('scale', iw, ih)
+            v = v.filter('scale', iw, ih, force_original_aspect_ratio='decrease')
+            v = v.filter('pad', iw, ih, '(ow-iw)/2', '(oh-ih)/2')
             v = v.filter('scale', zw, zh)
             v = v.filter('crop', iw, ih, off_x, off_y)
 
